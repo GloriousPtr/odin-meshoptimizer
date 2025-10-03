@@ -1,0 +1,36 @@
+inputs = [
+	"meshoptimizer/src"
+]
+
+output_folder = "."
+remove_type_prefix = "meshopt_"
+remove_function_prefix = "meshopt_"
+remove_macro_prefix = "meshopt_"
+required_prefix = "meshopt_"
+import_lib = "meshopt.lib"
+package_name = "meshopt"
+
+rename = {
+  "meshopt_EncodeExpMode" = "Encode_Exp_Mode"
+  "meshopt_VertexCacheStatistics" = "Vertex_Cache_Statistics"
+  "meshopt_VertexFetchStatistics" = "Vertex_Fetch_Statistics"
+  "meshopt_OverdrawStatistics" = "Overdraw_Statistics"
+  "meshopt_CoverageStatistics" = "Coverage_Statistics"
+  "meshopt_SimplifyOptions" = "Simplify_Options"
+}
+
+bit_setify = {
+  "meshopt_SimplifyOptions" = "Simplify_Options_Flags"
+}
+
+procedure_type_overrides = {
+  "meshopt_simplify.options" = "Simplify_Options_Flags"
+  "meshopt_simplifyWithAttributes.options" = "Simplify_Options_Flags"
+  "meshopt_simplifyWithUpdate.options" = "Simplify_Options_Flags"
+}
+
+remove_macros = [
+  "MESHOPTIMIZER_API"
+  "MESHOPTIMIZER_EXPERIMENTAL"
+  "MESHOPTIMIZER_ALLOC_CALLCONV"
+]
