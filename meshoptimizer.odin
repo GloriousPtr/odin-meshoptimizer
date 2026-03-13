@@ -1,5 +1,5 @@
 /**
-* meshoptimizer - version 0.25
+* meshoptimizer - version 1.0
 *
 * Copyright (C) 2016-2025, by Arseny Kapoulkine (arseny.kapoulkine@gmail.com)
 * Report bugs and download new versions at https://github.com/zeux/meshoptimizer
@@ -15,7 +15,7 @@ _ :: c
 foreign import lib "meshopt.lib"
 
 /* Version macro; major * 1000 + minor * 10 + patch */
-MESHOPTIMIZER_VERSION :: 250 /* 0.25 */
+MESHOPTIMIZER_VERSION :: 1000 /* 1.0 */
 
 // MESHOPTIMIZER_API :: 
 
@@ -34,24 +34,7 @@ Stream :: struct {
 }
 
 /**
-* Vertex buffer filter encoders
-* These functions can be used to encode data in a format that meshopt_decodeFilter can decode
-*
-* meshopt_encodeFilterOct encodes unit vectors with K-bit (K <= 16) signed X/Y as an output.
-* Each component is stored as an 8-bit or 16-bit normalized integer; stride must be equal to 4 or 8. W is preserved as is.
-* Input data must contain 4 floats for every vector (count*4 total).
-*
-* meshopt_encodeFilterQuat encodes unit quaternions with K-bit (4 <= K <= 16) component encoding.
-* Each component is stored as an 16-bit integer; stride must be equal to 8.
-* Input data must contain 4 floats for every quaternion (count*4 total).
-*
-* meshopt_encodeFilterExp encodes arbitrary (finite) floating-point data with 8-bit exponent and K-bit integer mantissa (1 <= K <= 24).
-* Exponent can be shared between all components of a given vector as defined by stride or all values of a given component; stride must be divisible by 4.
-* Input data must contain stride/4 floats for every vector (count*stride/4 total).
-*
-* Experimental: meshopt_encodeFilterColor encodes RGBA color data by converting RGB to YCoCg color space with variable bit quantization.
-* Each component is stored as an 8-bit or 16-bit integer; stride must be equal to 4 or 8.
-* Input data must contain 4 floats for every color (count*4 total).
+* Encoder options
 */
 Encode_Exp_Mode :: enum c.int {
 	/* When encoding exponents, use separate values for each component (maximum quality) */
@@ -83,7 +66,7 @@ Simplify_Options :: enum c.int {
 	/* Remove disconnected parts of the mesh during simplification incrementally, regardless of the topological restrictions inside components. */
 	Prune,
 
-	/* Experimental: Produce more regular triangle sizes and shapes during simplification, at some cost to geometric quality. */
+	/* Produce more regular triangle sizes and shapes during simplification, at some cost to geometric and attribute quality. */
 	Regularize,
 
 	/* Experimental: Allow collapses across attribute discontinuities, except for vertices that are tagged with meshopt_SimplifyVertex_Protect in vertex_lock. */
@@ -134,7 +117,7 @@ Meshlet :: struct {
 	vertex_offset: c.uint,
 	triangle_offset: c.uint,
 
-	/* number of vertices and triangles used in the meshlet; data is stored in consecutive range defined by offset and count */
+	/* number of vertices and triangles used in the meshlet; data is stored in consecutive range [offset..offset+count) for vertices and [offset..offset+count*3) for triangles */
 	vertex_count: c.uint,
 	triangle_count:  c.uint,
 }
@@ -285,7 +268,7 @@ foreign lib {
 	/**
 	* Vertex transform cache optimizer
 	* Reorders indices to reduce the number of GPU vertex shader invocations
-	* If index buffer contains multiple ranges for multiple draw calls, this functions needs to be called on each range individually.
+	* If index buffer contains multiple ranges for multiple draw calls, this function needs to be called on each range individually.
 	*
 	* destination must contain enough space for the resulting index buffer (index_count elements)
 	*/
@@ -304,7 +287,7 @@ foreign lib {
 	* Vertex transform cache optimizer for FIFO caches
 	* Reorders indices to reduce the number of GPU vertex shader invocations
 	* Generally takes ~3x less time to optimize meshes but produces inferior results compared to meshopt_optimizeVertexCache
-	* If index buffer contains multiple ranges for multiple draw calls, this functions needs to be called on each range individually.
+	* If index buffer contains multiple ranges for multiple draw calls, this function needs to be called on each range individually.
 	*
 	* destination must contain enough space for the resulting index buffer (index_count elements)
 	* cache_size should be less than the actual GPU cache size to avoid cache thrashing
@@ -314,7 +297,7 @@ foreign lib {
 	/**
 	* Overdraw optimizer
 	* Reorders indices to reduce the number of GPU vertex shader invocations and the pixel overdraw
-	* If index buffer contains multiple ranges for multiple draw calls, this functions needs to be called on each range individually.
+	* If index buffer contains multiple ranges for multiple draw calls, this function needs to be called on each range individually.
 	*
 	* destination must contain enough space for the resulting index buffer (index_count elements)
 	* indices must contain index data that is the result of meshopt_optimizeVertexCache (*not* the original mesh indices!)
@@ -327,7 +310,7 @@ foreign lib {
 	* Vertex fetch cache optimizer
 	* Reorders vertices and changes indices to reduce the amount of GPU memory fetches during vertex processing
 	* Returns the number of unique vertices, which is the same as input vertex count unless some vertices are unused
-	* This functions works for a single vertex stream; for multiple vertex streams, use meshopt_optimizeVertexFetchRemap + meshopt_remapVertexBuffer for each stream.
+	* This function works for a single vertex stream; for multiple vertex streams, use meshopt_optimizeVertexFetchRemap + meshopt_remapVertexBuffer for each stream.
 	*
 	* destination must contain enough space for the resulting vertex buffer (vertex_count elements)
 	* indices is used both as an input and as an output index buffer
@@ -457,22 +440,43 @@ foreign lib {
 	* Vertex buffer filters
 	* These functions can be used to filter output of meshopt_decodeVertexBuffer in-place.
 	*
-	* meshopt_decodeFilterOct decodes octahedral encoding of a unit vector with K-bit (K <= 16) signed X/Y as an input; Z must store 1.0f.
+	* meshopt_decodeFilterOct decodes octahedral encoding of a unit vector with K-bit signed X/Y as an input; Z must store 1.0f.
 	* Each component is stored as an 8-bit or 16-bit normalized integer; stride must be equal to 4 or 8. W is preserved as is.
 	*
-	* meshopt_decodeFilterQuat decodes 3-component quaternion encoding with K-bit (4 <= K <= 16) component encoding and a 2-bit component index indicating which component to reconstruct.
+	* meshopt_decodeFilterQuat decodes 3-component quaternion encoding with K-bit component encoding and a 2-bit component index indicating which component to reconstruct.
 	* Each component is stored as an 16-bit integer; stride must be equal to 8.
 	*
 	* meshopt_decodeFilterExp decodes exponential encoding of floating-point data with 8-bit exponent and 24-bit integer mantissa as 2^E*M.
 	* Each 32-bit component is decoded in isolation; stride must be divisible by 4.
 	*
-	* Experimental: meshopt_decodeFilterColor decodes YCoCg (+A) color encoding where RGB is converted to YCoCg space with variable bit quantization.
+	* meshopt_decodeFilterColor decodes RGBA colors from YCoCg (+A) color encoding where RGB is converted to YCoCg space with K-bit component encoding, and A is stored using K-1 bits.
 	* Each component is stored as an 8-bit or 16-bit normalized integer; stride must be equal to 4 or 8.
 	*/
 	decodeFilterOct   :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
 	decodeFilterQuat  :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
 	decodeFilterExp   :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
 	decodeFilterColor :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
+	
+	/**
+	* Vertex buffer filter encoders
+	* These functions can be used to encode data in a format that meshopt_decodeFilter can decode
+	*
+	* meshopt_encodeFilterOct encodes unit vectors with K-bit (2 <= K <= 16) signed X/Y as an output.
+	* Each component is stored as an 8-bit or 16-bit normalized integer; stride must be equal to 4 or 8. Z will store 1.0f, W is preserved as is.
+	* Input data must contain 4 floats for every vector (count*4 total).
+	*
+	* meshopt_encodeFilterQuat encodes unit quaternions with K-bit (4 <= K <= 16) component encoding.
+	* Each component is stored as an 16-bit integer; stride must be equal to 8.
+	* Input data must contain 4 floats for every quaternion (count*4 total).
+	*
+	* meshopt_encodeFilterExp encodes arbitrary (finite) floating-point data with 8-bit exponent and K-bit integer mantissa (1 <= K <= 24).
+	* Exponent can be shared between all components of a given vector as defined by stride or all values of a given component; stride must be divisible by 4.
+	* Input data must contain stride/4 floats for every vector (count*stride/4 total).
+	*
+	* meshopt_encodeFilterColor encodes RGBA color data by converting RGB to YCoCg color space with K-bit (2 <= K <= 16) component encoding; A is stored using K-1 bits.
+	* Each component is stored as an 8-bit or 16-bit integer; stride must be equal to 4 or 8.
+	* Input data must contain 4 floats for every color (count*4 total).
+	*/
 	encodeFilterOct   :: proc(destination: rawptr, count: c.size_t, stride: c.size_t, bits: c.int, data: ^f32) ---
 	encodeFilterQuat  :: proc(destination: rawptr, count: c.size_t, stride: c.size_t, bits: c.int, data: ^f32) ---
 	encodeFilterExp   :: proc(destination: rawptr, count: c.size_t, stride: c.size_t, bits: c.int, data: ^f32, mode: Encode_Exp_Mode) ---
@@ -521,7 +525,7 @@ foreign lib {
 	simplifyWithAttributes :: proc(destination: ^c.uint, indices: ^c.uint, index_count: c.size_t, vertex_positions: ^f32, vertex_count: c.size_t, vertex_positions_stride: c.size_t, vertex_attributes: ^f32, vertex_attributes_stride: c.size_t, attribute_weights: ^f32, attribute_count: c.size_t, vertex_lock: ^c.uchar, target_index_count: c.size_t, target_error: f32, options: Simplify_Options_Flags, result_error: ^f32) -> c.size_t ---
 
 	/**
-	* Experimental: Mesh simplifier with position/attribute update
+	* Mesh simplifier with position/attribute update
 	* Reduces the number of triangles in the mesh, attempting to preserve mesh appearance as much as possible.
 	* Similar to meshopt_simplifyWithAttributes, but destructively updates positions and attribute values for optimal appearance.
 	* The algorithm tries to preserve mesh topology and can stop short of the target goal based on topology constraints or target error.
@@ -697,10 +701,9 @@ foreign lib {
 
 	/**
 	* Meshlet optimizer
-	* Reorders meshlet vertices and triangles to maximize locality to improve rasterizer throughput
+	* Reorders meshlet vertices and triangles to maximize locality which can improve rasterizer throughput or ray tracing performance when using fast-build modes.
 	*
-	* meshlet_triangles and meshlet_vertices must refer to meshlet triangle and vertex index data; when buildMeshlets* is used, these
-	* need to be computed from meshlet's vertex_offset and triangle_offset
+	* meshlet_triangles and meshlet_vertices must refer to meshlet data; when buildMeshlets* is used, these need to be computed from meshlet's vertex_offset and triangle_offset
 	* triangle_count and vertex_count must not exceed implementation limits (vertex_count <= 256, triangle_count <= 512)
 	*/
 	optimizeMeshlet :: proc(meshlet_vertices: ^c.uint, meshlet_triangles: ^c.uchar, triangle_count: c.size_t, vertex_count: c.size_t) ---
@@ -743,13 +746,14 @@ foreign lib {
 	/**
 	* Cluster partitioner
 	* Partitions clusters into groups of similar size, prioritizing grouping clusters that share vertices or are close to each other.
+	* When vertex positions are not provided, only clusters that share vertices will be grouped together, which may result in small partitions for some inputs.
 	*
 	* destination must contain enough space for the resulting partition data (cluster_count elements)
 	* destination[i] will contain the partition id for cluster i, with the total number of partitions returned by the function
 	* cluster_indices should have the vertex indices referenced by each cluster, stored sequentially
 	* cluster_index_counts should have the number of indices in each cluster; sum of all cluster_index_counts must be equal to total_index_count
-	* vertex_positions should have float3 position in the first 12 bytes of each vertex (or can be NULL if not used)
-	* target_partition_size is a target size for each partition, in clusters; the resulting partitions may be smaller or larger
+	* vertex_positions can be NULL; when it's not NULL, it should have float3 position in the first 12 bytes of each vertex
+	* target_partition_size is a target size for each partition, in clusters; the resulting partitions may be smaller or larger (up to target + target/3)
 	*/
 	partitionClusters :: proc(destination: ^c.uint, cluster_indices: ^c.uint, total_index_count: c.size_t, cluster_index_counts: ^c.uint, cluster_count: c.size_t, vertex_positions: ^f32, vertex_count: c.size_t, vertex_positions_stride: c.size_t, target_partition_size: c.size_t) -> c.size_t ---
 
@@ -792,7 +796,7 @@ foreign lib {
 
 	/**
 	* Quantize a float into a floating point value with a limited number of significant mantissa bits, preserving the IEEE-754 fp32 binary representation
-	* Generates +-inf for overflow, preserves NaN, flushes denormals to zero, rounds to nearest
+	* Preserves infinities/NaN, flushes denormals to zero, rounds to nearest
 	* Assumes N is in a valid mantissa precision range, which is 1..23
 	*/
 	quantizeFloat :: proc(v: f32, N: c.int) -> f32 ---
