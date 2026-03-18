@@ -12,14 +12,20 @@ import "core:c"
 
 _ :: c
 
-foreign import lib "meshopt.lib"
+when ODIN_OS == .Windows {
+	foreign import lib "meshopt.lib"
+} else when ODIN_OS == .Linux {
+	foreign import lib "meshopt.a"
+} else {
+	#panic("Could not find the compiled bc7e library for " + ODIN_OS)
+}
 
 /* Version macro; major * 1000 + minor * 10 + patch */
 MESHOPTIMIZER_VERSION :: 1000 /* 1.0 */
 
-// MESHOPTIMIZER_API :: 
+// MESHOPTIMIZER_API ::
 
-// MESHOPTIMIZER_ALLOC_CALLCONV :: 
+// MESHOPTIMIZER_ALLOC_CALLCONV ::
 
 // MESHOPTIMIZER_EXPERIMENTAL :: MESHOPTIMIZER_API
 
@@ -456,7 +462,7 @@ foreign lib {
 	decodeFilterQuat  :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
 	decodeFilterExp   :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
 	decodeFilterColor :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
-	
+
 	/**
 	* Vertex buffer filter encoders
 	* These functions can be used to encode data in a format that meshopt_decodeFilter can decode
