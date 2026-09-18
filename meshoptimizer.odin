@@ -21,7 +21,7 @@ when ODIN_OS == .Windows {
 }
 
 /* Version macro; major * 1000 + minor * 10 + patch */
-MESHOPTIMIZER_VERSION :: 1000 /* 1.0 */
+MESHOPTIMIZER_VERSION :: 1020 /* 1.2 */
 
 // MESHOPTIMIZER_API ::
 
@@ -77,16 +77,21 @@ Simplify_Options :: enum c.int {
 
 	/* Experimental: Allow collapses across attribute discontinuities, except for vertices that are tagged with meshopt_SimplifyVertex_Protect in vertex_lock. */
 	Permissive,
+
+	/* Produce more regular triangle sizes and shapes during simplification, at a small cost to geometric and attribute quality. */
+	RegularizeLight,
 }
 
 Simplify_Options_Flags :: distinct bit_set[Simplify_Options; c.int]
 
 /**
-* Experimental: Simplification vertex flags/locks, for use in `vertex_lock` arrays in simplification APIs
+* Simplification vertex flags/locks, for use in `vertex_lock` arrays in simplification APIs
 */
 SimplifyVertex_Lock :: 1
 
 SimplifyVertex_Protect :: 2
+
+SimplifyVertex_Priority :: 4
 
 Vertex_Cache_Statistics :: struct {
 	vertices_transformed: c.uint,
@@ -143,6 +148,16 @@ Bounds :: struct {
 	cone_cutoff_s8: c.schar,
 }
 
+/**
+* Tangent generation options
+*/
+Tangent_Options :: enum c.int {
+	Compatible,
+	ZeroFallback,
+}
+
+Tangent_Options_Flags :: distinct bit_set[Tangent_Options; c.int]
+
 @(default_calling_convention="c", link_prefix="meshopt_")
 foreign lib {
 	/**
@@ -197,6 +212,27 @@ foreign lib {
 	* indices can be NULL if the input is unindexed
 	*/
 	remapIndexBuffer :: proc(destination: ^c.uint, indices: ^c.uint, index_count: c.size_t, remap: ^c.uint) ---
+
+	/**
+	* Experimental: Filter out redundant triangles from the index buffer and return the number of remaining indices
+	* Triangles are considered redundant if they are degenerate (two vertices have the same vertex key) or duplicate (matching triangle was present earlier).
+	* First vertex_size bytes of every vertex are compared for equality; typically vertex_size should be set to the size of the position attribute.
+	* Note that duplicate triangles with opposite windings are preserved, as they may be needed for double-sided rendering.
+	*
+	* destination must contain enough space for the resulting index buffer (index_count elements)
+	*/
+	filterIndexBuffer :: proc(destination: ^c.uint, indices: ^c.uint, index_count: c.size_t, vertices: rawptr, vertex_count: c.size_t, vertex_size: c.size_t, vertex_stride: c.size_t) -> c.size_t ---
+
+	/**
+	* Experimental: Filter out redundant triangles from the index buffer and return the number of remaining indices
+	* Triangles are considered redundant if they are degenerate (two vertices have the same vertex key) or duplicate (matching triangle was present earlier).
+	* All bytes in specified streams are compared for equality; streams should include attributes relevant for position transform (e.g. bone influences).
+	* Note that duplicate triangles with opposite windings are preserved, as they may be needed for double-sided rendering.
+	*
+	* destination must contain enough space for the resulting index buffer (index_count elements)
+	* stream_count must be <= 16
+	*/
+	filterIndexBufferMulti :: proc(destination: ^c.uint, indices: ^c.uint, index_count: c.size_t, vertex_count: c.size_t, streams: ^Stream, stream_count: c.size_t) -> c.size_t ---
 
 	/**
 	* Generate index buffer that can be used for more efficient rendering when only a subset of the vertex attributes is necessary
@@ -348,6 +384,8 @@ foreign lib {
 	/**
 	* Set index encoder format version (defaults to 1)
 	*
+	* This function is not thread safe and must not be called concurrently with meshopt_encodeIndexBuffer/meshopt_encodeIndexSequence.
+	*
 	* version must specify the data format version to encode; valid values are 0 (decodable by all library versions) and 1 (decodable by 0.14+)
 	*/
 	encodeIndexVersion :: proc(version: c.int) ---
@@ -390,6 +428,39 @@ foreign lib {
 	*/
 	decodeIndexSequence :: proc(destination: rawptr, index_count: c.size_t, index_size: c.size_t, buffer: ^c.uchar, buffer_size: c.size_t) -> c.int ---
 
+	
+	/**
+	* Meshlet encoder
+	* Encodes meshlet data into an array of bytes that is generally smaller and compresses better compared to original.
+	* Returns encoded data size on success, 0 on error; the only error condition is if buffer doesn't have enough space
+	* This function encodes a single meshlet; when encoding multiple meshlets, additional headers may be necessary to store vertex/triangle count and encoded size.
+	* For maximum efficiency the meshlet being encoded should be optimized using meshopt_optimizeMeshletLevel with level 1+ (3 recommended); additionally, vertex reference data should be optimized for locality (fetch).
+	*
+	* buffer must contain enough space for the encoded meshlet (use meshopt_encodeMeshletBound to compute worst case size)
+	* vertices may be NULL, in which case vertex_count must be 0 and only triangle data is encoded
+	* vertex_count and triangle_count must be <= 256.
+	*/
+	encodeMeshlet      :: proc(buffer: ^c.uchar, buffer_size: c.size_t, vertices: ^c.uint, vertex_count: c.size_t, triangles: ^c.uchar, triangle_count: c.size_t) -> c.size_t ---
+	encodeMeshletBound :: proc(max_vertices: c.size_t, max_triangles: c.size_t) -> c.size_t ---
+
+	/**
+	* Meshlet decoder
+	* Decodes meshlet data from an array of bytes generated by meshopt_encodeMeshlet
+	* Returns 0 if decoding was successful, and an error code otherwise
+	* The decoder is safe to use for untrusted input, but it may produce garbage data.
+	*
+	* vertices must contain enough space for the resulting vertex data, aligned to 4 bytes (align(vertex_count * vertex_size, 4) bytes)
+	* vertex_size must be 2 (16-bit vertex references) or 4 (32-bit vertex references)
+	* triangles must contain enough space for the resulting triangle data, aligned to 4 bytes (align(triangle_count * triangle_size, 4) bytes)
+	* triangle_size must be 3 (8-bit triangle indices) or 4 (32-bit packed triangles, stored as (a) | (b << 8) | (c << 16))
+	* vertex_count, triangle_count match those used during encoding exactly; buffer_size must be equal to the encoded size returned by meshopt_encodeMeshlet.
+	* vertices may be NULL, in which case vertex_count must be 0 and the meshlet must contain just triangle data
+	*
+	* When using "raw" decoding (meshopt_decodeMeshletRaw), both vertices and triangles should have available space further aligned to 16 bytes for efficient SIMD decoding.
+	*/
+	decodeMeshlet    :: proc(vertices: rawptr, vertex_count: c.size_t, vertex_size: c.size_t, triangles: rawptr, triangle_count: c.size_t, triangle_size: c.size_t, buffer: ^c.uchar, buffer_size: c.size_t) -> c.int ---
+	decodeMeshletRaw :: proc(vertices: ^c.uint, vertex_count: c.size_t, triangles: ^c.uint, triangle_count: c.size_t, buffer: ^c.uchar, buffer_size: c.size_t) -> c.int ---
+
 	/**
 	* Vertex buffer encoder
 	* Encodes vertex data into an array of bytes that is generally smaller and compresses better compared to original.
@@ -420,6 +491,8 @@ foreign lib {
 	/**
 	* Set vertex encoder format version (defaults to 1)
 	*
+	* This function is not thread safe and must not be called concurrently with meshopt_encodeVertexBuffer/meshopt_encodeVertexBufferLevel.
+	*
 	* version must specify the data format version to encode; valid values are 0 (decodable by all library versions) and 1 (decodable by 0.23+)
 	*/
 	encodeVertexVersion :: proc(version: c.int) ---
@@ -442,21 +515,26 @@ foreign lib {
 	*/
 	decodeVertexVersion :: proc(buffer: ^c.uchar, buffer_size: c.size_t) -> c.int ---
 
+	
 	/**
-	* Vertex buffer filters
-	* These functions can be used to filter output of meshopt_decodeVertexBuffer in-place.
+	* Vertex buffer filter encoders
+	* These functions can be used to encode data in a format that meshopt_decodeFilter can decode
 	*
-	* meshopt_decodeFilterOct decodes octahedral encoding of a unit vector with K-bit signed X/Y as an input; Z must store 1.0f.
-	* Each component is stored as an 8-bit or 16-bit normalized integer; stride must be equal to 4 or 8. W is preserved as is.
+	* meshopt_encodeFilterOct encodes unit vectors with K-bit (2 <= K <= 16) signed X/Y as an output.
+	* Each component is stored as an 8-bit or 16-bit normalized integer; stride must be equal to 4 (K <= 8) or 8 (K <= 16). Z will store 1.0f, W is preserved as is.
+	* Input data must contain 4 floats for every vector (count*4 total).
 	*
-	* meshopt_decodeFilterQuat decodes 3-component quaternion encoding with K-bit component encoding and a 2-bit component index indicating which component to reconstruct.
-	* Each component is stored as an 16-bit integer; stride must be equal to 8.
+	* meshopt_encodeFilterQuat encodes unit quaternions with K-bit (4 <= K <= 16) component encoding.
+	* Each component is stored as a 16-bit integer; stride must be equal to 8.
+	* Input data must contain 4 floats for every quaternion (count*4 total).
 	*
-	* meshopt_decodeFilterExp decodes exponential encoding of floating-point data with 8-bit exponent and 24-bit integer mantissa as 2^E*M.
-	* Each 32-bit component is decoded in isolation; stride must be divisible by 4.
+	* meshopt_encodeFilterExp encodes arbitrary (finite) floating-point data with 8-bit exponent and K-bit integer mantissa (1 <= K <= 24).
+	* Exponent can be shared between all components of a given vector as defined by stride or all values of a given component; stride must be divisible by 4 (and <= 256).
+	* Input data must contain stride/4 floats for every vector (count*stride/4 total).
 	*
-	* meshopt_decodeFilterColor decodes RGBA colors from YCoCg (+A) color encoding where RGB is converted to YCoCg space with K-bit component encoding, and A is stored using K-1 bits.
-	* Each component is stored as an 8-bit or 16-bit normalized integer; stride must be equal to 4 or 8.
+	* meshopt_encodeFilterColor encodes RGBA color data by converting RGB to YCoCg color space with K-bit (2 <= K <= 16) component encoding; A is stored using K-1 bits.
+	* Each component is stored as an 8-bit or 16-bit integer; stride must be equal to 4 (K <= 8) or 8 (K <= 16).
+	* Input data must contain 4 floats for every color (count*4 total).
 	*/
 	decodeFilterOct   :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
 	decodeFilterQuat  :: proc(buffer: rawptr, count: c.size_t, stride: c.size_t) ---
@@ -500,9 +578,9 @@ foreign lib {
 	*
 	* destination must contain enough space for the target index buffer, worst case is index_count elements (*not* target_index_count)!
 	* vertex_positions should have float3 position in the first 12 bytes of each vertex
-	* target_error represents the error relative to mesh extents that can be tolerated, e.g. 0.01 = 1% deformation; value range [0..1]
+	* target_error represents the error relative to mesh extents that can be tolerated, e.g. 0.01 = 1% deformation (unless absolute error option is used)
 	* options must be a bitmask composed of meshopt_SimplifyX options; 0 is a safe default
-	* result_error can be NULL; when it's not NULL, it will contain the resulting (relative) error after simplification
+	* result_error can be NULL; when it's not NULL, it will contain the resulting (relative/absolute) error after simplification
 	*/
 	simplify :: proc(destination: ^c.uint, indices: ^c.uint, index_count: c.size_t, vertex_positions: ^f32, vertex_count: c.size_t, vertex_positions_stride: c.size_t, target_index_count: c.size_t, target_error: f32, options: Simplify_Options_Flags, result_error: ^f32) -> c.size_t ---
 
@@ -714,6 +792,16 @@ foreign lib {
 	*/
 	optimizeMeshlet :: proc(meshlet_vertices: ^c.uint, meshlet_triangles: ^c.uchar, triangle_count: c.size_t, vertex_count: c.size_t) ---
 
+
+	/**
+	* Meshlet optimizer
+	* Reorders meshlet vertices and triangles to maximize locality, with higher levels resulting in smaller compressed size at the cost of optimization time.
+	* At level 0 the result is equivalent to meshopt_optimizeMeshlet; levels >= 1 may rotate triangle corners to improve compression (which can change provoking vertex and affect OMM data).
+	*
+	* level should be in the range [0, 9] with 0 equivalent to meshopt_optimizeMeshlet and 9 being the slowest; the sweet spot for compression ratio is around 3
+	*/
+	optimizeMeshletLevel :: proc(meshlet_vertices: ^c.uint, vertex_count: c.size_t, meshlet_triangles: ^c.uchar, triangle_count: c.size_t, level: c.int) ---
+
 	/**
 	* Cluster bounds generator
 	* Creates bounding volumes that can be used for frustum, backface and occlusion culling.
@@ -735,6 +823,7 @@ foreign lib {
 	*
 	* vertex_positions should have float3 position in the first 12 bytes of each vertex
 	* vertex_count should specify the number of vertices in the entire mesh, not cluster or meshlet
+	* indices should have at most 256 unique vertex indices
 	* index_count/3 and triangle_count must not exceed implementation limits (<= 512)
 	*/
 	computeClusterBounds :: proc(indices: ^c.uint, index_count: c.size_t, vertex_positions: ^f32, vertex_count: c.size_t, vertex_positions_stride: c.size_t) -> Bounds ---
@@ -748,6 +837,17 @@ foreign lib {
 	* radii can be NULL; when it's not NULL, it should have a non-negative float radius in the first 4 bytes of each element
 	*/
 	computeSphereBounds :: proc(positions: ^f32, count: c.size_t, positions_stride: c.size_t, radii: ^f32, radii_stride: c.size_t) -> Bounds ---
+
+	/**
+	* Extract meshlet-local vertex and triangle indices from absolute cluster indices.
+	* Fills triangles[] and vertices[] such that vertices[triangles[i]] == indices[i], and returns the number of unique vertices.
+	*
+	* vertices must contain enough space for the resulting references (up to 256 elements)
+	* triangles must contain enough space for local indices (index_count elements)
+	* indices should have at most 256 unique vertex indices
+	* index_count/3 must not exceed implementation limits (<= 512)
+	*/
+	extractMeshletIndices :: proc(vertices: ^c.uint, triangles: ^c.uchar, indices: ^c.uint, index_count: c.size_t) -> c.size_t ---
 
 	/**
 	* Cluster partitioner
@@ -793,6 +893,65 @@ foreign lib {
 	spatialClusterPoints :: proc(destination: ^c.uint, vertex_positions: ^f32, vertex_count: c.size_t, vertex_positions_stride: c.size_t, cluster_size: c.size_t) ---
 
 	/**
+	* Experimental: Opacity micromap generator (measure)
+	* Computes a subdivision level for each input triangle, as well as deduplicating the triangles that reference the same UVs to reduce rasterization requests.
+	* Returns the number of OMM entries.
+	*
+	* levels and sources must contain enough space for the worst case output (index_count/3 elements, one per resulting OMM entry)
+	* levels[i] will contain the subdivision level for entry i, with the total number of entries returned by the function; each entry should be rasterized from triangle index sources[i]
+	* omm_indices must contain enough space for the resulting OMM indices (index_count/3 elements, one per triangle)
+	* vertex_uvs should have float2 texture coordinate in the first 8 bytes of each vertex
+	* max_level specifies the maximum subdivision level (0..12)
+	* target_edge can be 0; when >0, triangle subdivision is adaptive and targets target_edge^2 texel area
+	*/
+	opacityMapMeasure :: proc(levels: ^c.uchar, sources: ^c.uint, omm_indices: ^c.int, indices: ^c.uint, index_count: c.size_t, vertex_uvs: ^f32, vertex_count: c.size_t, vertex_uvs_stride: c.size_t, texture_width: c.uint, texture_height: c.uint, max_level: c.int, target_edge: f32) -> c.size_t ---
+
+	/**
+	* Experimental: Opacity micromap generator (rasterize)
+	* Rasterizes opacity state for a single triangle entry by sampling the alpha texture, using bilinear filtering and 0.5 alpha cutoff.
+	*
+	* result should contain enough space for the output opacity data (which can be computed using meshopt_opacityMapEntrySize)
+	* level specifies the subdivision level (0..12)
+	* states should be 2 for 2-state format (opaque/transparent) and 4 for 4-state format (opaque/transparent/unknown)
+	* uv0/uv1/uv2 should refer to a float2 texture coordinate for each triangle corner; note that micromap data is sensitive to the corner order
+	* texture_data should point to the alpha channel of the first pixel, encoded as UNORM8
+	* texture_stride specifies the distance in bytes between consecutive pixels, e.g. 4 for RGBA input
+	* texture_pitch specifies the distance in bytes between consecutive rows, e.g. 4*texture_width for tightly packed RGBA input
+	*/
+	opacityMapRasterize :: proc(result: ^c.uchar, level: c.int, states: c.int, uv0: ^f32, uv1: ^f32, uv2: ^f32, texture_data: ^c.uchar, texture_stride: c.size_t, texture_pitch: c.size_t, texture_width: c.uint, texture_height: c.uint) ---
+	opacityMapEntrySize :: proc(level: c.int, states: c.int) -> c.size_t ---
+
+	/**
+	* Experimental: Opacity micromap generator (compact)
+	* Compacts and deduplicates opacity data, merging identical micromap entries and replacing micromap states with special indices (-4..-1) when possible.
+	* Returns the number of OMM entries after compaction; the data array should be trimmed using the last offset/size.
+	*
+	* data should contain opacity data for all input/output entries
+	* levels should contain subdivision levels for all input/output entries
+	* offsets should contain offset into data[] for each entry
+	* levels[i] and offsets[i] will be updated with post-compaction level/offset for entry i, with the total number of entries returned by the function
+	* omm_indices should contain indices into the original OMM data, and will be updated with a new index or a special index (-4..-1) when possible
+	* states should be 2 for 2-state format (opaque/transparent) and 4 for 4-state format (opaque/transparent/unknown)
+	*/
+	opacityMapCompact :: proc(data: ^c.uchar, data_size: c.size_t, levels: ^c.uchar, offsets: ^c.uint, omm_count: c.size_t, omm_indices: ^c.int, triangle_count: c.size_t, states: c.int) -> c.size_t ---
+
+	/**
+	* Experimental: Tangent space generator
+	* Computes per-corner tangent vectors; for each corner, computes normalized tangent vector (xyz) and orientation (w, +/-1).
+	* Bitangent can be reconstructed via cross(normal, tangent.xyz) * tangent.w.
+	* To apply tangents to the mesh, either deindex and reindex it with the tangent stream, or copy tangents to existing vertex data while duplicating
+	* vertices with different tangent vectors (e.g. on UV mirror seams).
+	* Input can be indexed or unindexed (indices=NULL); this does not affect the resulting tangents, but indexed inputs are ~30% faster to process.
+	*
+	* result must contain enough space for the output tangent data (index_count*4 elements)
+	* indices can be NULL if the input is unindexed
+	* vertex_positions should have float3 position in the first 12 bytes of each vertex
+	* vertex_normals should have unit float3 normal in the first 12 bytes of each vertex
+	* vertex_uvs should have float2 texture coordinate in the first 8 bytes of each vertex
+	*/
+	generateTangents :: proc(result: ^f32, indices: ^c.uint, index_count: c.size_t, vertex_positions: ^f32, vertex_count: c.size_t, vertex_positions_stride: c.size_t, vertex_normals: ^f32, vertex_normals_stride: c.size_t, vertex_uvs: ^f32, vertex_uvs_stride: c.size_t, options: Tangent_Options_Flags) ---
+
+	/**
 	* Quantize a float into half-precision (as defined by IEEE-754 fp16) floating point value
 	* Generates +-inf for overflow, preserves NaN, flushes denormals to zero, rounds to nearest
 	* Representable magnitude range: [6e-5; 65504]
@@ -814,10 +973,30 @@ foreign lib {
 	dequantizeHalf :: proc(h: c.ushort) -> f32 ---
 
 	/**
+	* Experimental: Compute shared exponent suitable for mesh/cluster position quantization
+	* Given mesh or cluster bounds, compute a shared exponent that can be used to quantize any position inside the bounds to a 24-bit integer grid.
+	* The resulting output can be stored as a compact bit-stream to be decoded directly in shaders, or to be used as an input to RT BVH builders,
+	* for example via D3D12_VERTEX_FORMAT_COMPRESSED1 in DXR2 (max_bits=16).
+	*
+	* To quantize positions, compute:
+	*   scale = pow(2, exponent)
+	*   iv = int(round(v / scale))
+	* The resulting integer can be stored as signed 24-bit, or as an unsigned offset from a signed 24-bit anchor value, shared between all positions.
+	*
+	* minv/maxv specify the axis-aligned bounding box of the mesh or cluster; each should refer to a float3 value
+	* min_exp specifies the minimum value for the returned exponent, limiting precision to reduce size; e.g. min_exp = -10 will produce minimum error of 1mm given metric units
+	* max_bits specifies the maximum allowed number of bits for the quantized integer range (offset from anchor is an unsigned integer up to 2^max_bits-1)
+	*/
+	computePositionExponent :: proc(minv: ^f32, maxv: ^f32, min_exp: c.int, max_bits: c.int) -> c.int ---
+
+	/**
 	* Set allocation callbacks
 	* These callbacks will be used instead of the default operator new/operator delete for all temporary allocations in the library.
 	* Note that all algorithms only allocate memory for temporary use.
 	* allocate/deallocate are always called in a stack-like order - last pointer to be allocated is deallocated first.
+	* This function is not thread safe and must not be called concurrently with any other meshopt_ function.
+	*
+	* In shared library builds, allocations from templated index wrappers in this header will only be redirected if MESHOPTIMIZER_ALLOC_EXPORT is defined.
 	*/
 	setAllocator :: proc(allocate: proc "c" (c.size_t) -> rawptr, deallocate: proc "c" (rawptr)) ---
 }
